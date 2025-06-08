@@ -6,12 +6,66 @@ import { AuctionCard } from '@/components/AuctionCard';
 import { BidDialog } from '@/components/BidDialog';
 import { RelaySelector } from '@/components/RelaySelector';
 import { useAuctions } from '@/hooks/useAuctions';
+import { useNostr } from '@nostrify/react';
+import { useQuery } from '@tanstack/react-query';
 import { Plus, Filter, Search } from 'lucide-react';
 import { Link, useNavigate } from 'react-router-dom';
 import type { NostrEvent } from '@nostrify/nostrify';
 
+// Custom hook to get current bids for all auctions
+function useAuctionCurrentBids(auctions: NostrEvent[] | undefined) {
+  const { nostr } = useNostr();
+  
+  return useQuery({
+    queryKey: ['auction-current-bids', auctions?.map(a => a.id)],
+    queryFn: async (c) => {
+      if (!auctions || auctions.length === 0) return {};
+      
+      const signal = AbortSignal.any([c.signal, AbortSignal.timeout(5000)]);
+      
+      // Get all bids for all auctions in one query
+      const auctionIds = auctions.map(a => a.id);
+      const events = await nostr.query([{ 
+        kinds: [1021], 
+        '#e': auctionIds,
+        limit: 1000 
+      }], { signal });
+      
+      // Group bids by auction and find highest bid for each
+      const bidsByAuction: Record<string, { amount: number; count: number }> = {};
+      
+      events.forEach(event => {
+        const auctionId = event.tags.find(([name]) => name === 'e')?.[1];
+        if (!auctionId) return;
+        
+        try {
+          const bidData = JSON.parse(event.content);
+          if (typeof bidData.amount !== 'number' || bidData.amount <= 0) return;
+          
+          if (!bidsByAuction[auctionId]) {
+            bidsByAuction[auctionId] = { amount: bidData.amount, count: 1 };
+          } else {
+            bidsByAuction[auctionId].count++;
+            if (bidData.amount > bidsByAuction[auctionId].amount) {
+              bidsByAuction[auctionId].amount = bidData.amount;
+            }
+          }
+        } catch {
+          // Invalid bid data, skip
+        }
+      });
+      
+      return bidsByAuction;
+    },
+    enabled: !!auctions && auctions.length > 0,
+    staleTime: 10000, // 10 seconds
+    refetchInterval: 15000, // 15 seconds
+  });
+}
+
 export function AuctionsPage() {
   const { data: auctions, isLoading, error } = useAuctions();
+  const { data: currentBids = {} } = useAuctionCurrentBids(auctions);
   const [selectedAuction, setSelectedAuction] = useState<NostrEvent | null>(null);
   const [bidDialogOpen, setBidDialogOpen] = useState(false);
   const navigate = useNavigate();
@@ -35,8 +89,12 @@ export function AuctionsPage() {
   };
 
   const getCurrentBid = (auctionEventId: string) => {
-    // This would normally come from the bids query for each auction
-    // For now, we'll return the starting bid from the auction data
+    const bidInfo = currentBids[auctionEventId];
+    if (bidInfo && bidInfo.amount > 0) {
+      return bidInfo.amount;
+    }
+    
+    // Fallback to starting bid if no bids found
     const auction = auctions?.find(a => a.id === auctionEventId);
     if (!auction) return 0;
     
@@ -48,10 +106,9 @@ export function AuctionsPage() {
     }
   };
 
-  const getBidCount = (_auctionEventId: string) => {
-    // This would normally come from the bids query for each auction
-    // For now, return 0
-    return 0;
+  const getBidCount = (auctionEventId: string) => {
+    const bidInfo = currentBids[auctionEventId];
+    return bidInfo?.count || 0;
   };
 
   if (isLoading) {

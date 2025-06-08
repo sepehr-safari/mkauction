@@ -43,8 +43,10 @@ interface BidDialogProps {
   minBidIncrement?: number;
 }
 
-const bidSchema = z.object({
-  amount: z.number().min(1, 'Bid amount must be at least 1 sat'),
+const createBidSchema = (currentBid: number, minIncrement: number) => z.object({
+  amount: z.number()
+    .min(1, 'Bid amount must be at least 1 sat')
+    .min(currentBid + minIncrement, `Bid must be at least ${(currentBid + minIncrement).toLocaleString()} sats (current bid + ${minIncrement} sats)`),
   shippingOption: z.enum(['local', 'international'], {
     required_error: 'Please select a shipping option',
   }),
@@ -52,7 +54,12 @@ const bidSchema = z.object({
   message: z.string().optional(),
 });
 
-type BidFormData = z.infer<typeof bidSchema>;
+type BidFormData = {
+  amount: number;
+  shippingOption: 'local' | 'international';
+  buyerCountry: string;
+  message?: string;
+};
 
 // Common country codes for the dropdown
 const COMMON_COUNTRIES = [
@@ -84,6 +91,8 @@ export function BidDialog({ open, onOpenChange, auction, currentBid, minBidIncre
     }
   }, [auction.content]);
 
+  // Create form with dynamic schema based on current bid
+  const bidSchema = createBidSchema(currentBid, minBidIncrement);
   const form = useForm<BidFormData>({
     resolver: zodResolver(bidSchema),
     defaultValues: {
@@ -92,7 +101,7 @@ export function BidDialog({ open, onOpenChange, auction, currentBid, minBidIncre
     },
   });
 
-  // Reset form when dialog opens with new values
+  // Reset form when dialog opens or current bid changes
   useEffect(() => {
     if (open) {
       form.reset({
@@ -139,10 +148,20 @@ export function BidDialog({ open, onOpenChange, auction, currentBid, minBidIncre
       return;
     }
 
+    // Additional validation (schema should catch this, but double-check)
     if (data.amount <= currentBid) {
       toast({
         title: 'Invalid bid amount',
-        description: `Bid must be higher than current bid of ${currentBid} sats`,
+        description: `Bid must be higher than current bid of ${currentBid.toLocaleString()} sats`,
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    if (data.amount < currentBid + minBidIncrement) {
+      toast({
+        title: 'Bid increment too small',
+        description: `Bid must be at least ${(currentBid + minBidIncrement).toLocaleString()} sats (minimum increment: ${minBidIncrement} sats)`,
         variant: 'destructive',
       });
       return;
