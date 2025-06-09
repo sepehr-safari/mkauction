@@ -9,6 +9,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { BidDialog } from '@/components/BidDialog';
 import { AuctionComments } from '@/components/AuctionComments';
 import { AuctionManagement } from '@/components/AuctionManagement';
+import { PublicBidHistory } from '@/components/PublicBidHistory';
 import { RelaySelector } from '@/components/RelaySelector';
 import { useAuction, useAuctionByDTag, useAuctionBids } from '@/hooks/useAuctions';
 import { useAuthor } from '@/hooks/useAuthor';
@@ -29,7 +30,6 @@ import {
   Tag
 } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
-import type { NostrEvent } from '@nostrify/nostrify';
 
 interface AuctionData {
   id: string;
@@ -477,21 +477,8 @@ export function AuctionDetailsPage() {
             </CardContent>
           </Card>
 
-          {/* Bid History */}
-          {bids && bids.length > 0 && (
-            <Card>
-              <CardHeader>
-                <CardTitle>Bid History</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="space-y-4">
-                  {bids.map((bid, index) => (
-                    <BidHistoryItem key={bid.id} bid={bid} isHighest={index === 0} />
-                  ))}
-                </div>
-              </CardContent>
-            </Card>
-          )}
+          {/* Public Bid History - Visible to everyone */}
+          <PublicBidHistory auctionEventId={auction.id} />
 
           {/* Auction Management - Only visible to auction creator */}
           {user && user.pubkey === auction.pubkey && (
@@ -515,39 +502,3 @@ export function AuctionDetailsPage() {
   );
 }
 
-function BidHistoryItem({ bid, isHighest }: { bid: NostrEvent; isHighest: boolean }) {
-  const bidAuthor = useAuthor(bid.pubkey);
-  
-  try {
-    const bidData = JSON.parse(bid.content) as BidData;
-    const bidderName = bidAuthor.data?.metadata?.name ?? genUserName(bid.pubkey);
-    
-    return (
-      <div className="flex items-center justify-between p-4 border rounded-lg">
-        <div className="flex items-center space-x-3">
-          <Avatar className="h-8 w-8">
-            <AvatarImage src={bidAuthor.data?.metadata?.picture} />
-            <AvatarFallback>{bidderName[0]?.toUpperCase()}</AvatarFallback>
-          </Avatar>
-          <div>
-            <p className="font-medium">{bidderName}</p>
-            <p className="text-sm text-muted-foreground">
-              {formatDistanceToNow(new Date(bid.created_at * 1000), { addSuffix: true })}
-            </p>
-          </div>
-        </div>
-        <div className="text-right">
-          <div className="flex items-center space-x-1">
-            <Zap className="h-4 w-4 text-orange-500" />
-            <span className="font-semibold">{bidData.amount.toLocaleString()} sats</span>
-          </div>
-          {isHighest && (
-            <Badge variant="outline" className="mt-1">Highest Bid</Badge>
-          )}
-        </div>
-      </div>
-    );
-  } catch {
-    return null;
-  }
-}

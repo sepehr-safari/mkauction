@@ -8,10 +8,13 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/u
 import { Textarea } from '@/components/ui/textarea';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { useAuctionBidsWithConfirmations, useBidConfirmation, useAuctionStatusUpdate, usePaymentRequest } from '@/hooks/useAuctionManagement';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { useAuctionBidsWithConfirmations, useBidConfirmation, useAuctionStatusUpdate } from '@/hooks/useAuctionManagement';
 import { useAuthor } from '@/hooks/useAuthor';
 import { useCurrentUser } from '@/hooks/useCurrentUser';
 import { genUserName } from '@/lib/genUserName';
+import { AuctionCommunications } from '@/components/AuctionCommunications';
+import { SendPaymentRequestDialog } from '@/components/SendPaymentRequestDialog';
 import { 
   Check, 
   X, 
@@ -21,7 +24,8 @@ import {
   MessageSquare, 
   DollarSign,
   Package,
-  AlertTriangle
+  AlertTriangle,
+  MessageCircle
 } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
 import type { NostrEvent } from '@nostrify/nostrify';
@@ -72,14 +76,12 @@ export function AuctionManagement({ auction, auctionData }: AuctionManagementPro
   const { data: bidsWithConfirmations, isLoading } = useAuctionBidsWithConfirmations(auction.id);
   const { confirmBid, isPending: isConfirming } = useBidConfirmation();
   const { updateAuctionStatus } = useAuctionStatusUpdate();
-  const { sendPaymentRequest, isPending: isSendingPayment } = usePaymentRequest();
-  
   const [selectedBid, setSelectedBid] = useState<BidItem | null>(null);
   const [confirmationMessage, setConfirmationMessage] = useState('');
   const [extendTime, setExtendTime] = useState(300); // 5 minutes default
   const [paymentDialogOpen, setPaymentDialogOpen] = useState(false);
-  const [lightningInvoice, setLightningInvoice] = useState('');
   const [isAuctionEnded, setIsAuctionEnded] = useState(false);
+  const [paymentRequestRecipient, setPaymentRequestRecipient] = useState<{ pubkey: string; name: string } | null>(null);
 
   // Check if auction has ended
   useEffect(() => {
@@ -138,22 +140,12 @@ export function AuctionManagement({ auction, auctionData }: AuctionManagementPro
     );
   };
 
-  const handleSendPaymentRequest = () => {
-    const winner = bidsWithConfirmations?.find(item => item.status === 'winner');
-    if (!winner || !lightningInvoice) return;
-
-    const totalCost = winner.bidData ? winner.bidData.amount + getShippingCost(winner.bidData) : 0;
-    
-    sendPaymentRequest(
-      winner.bid.pubkey,
-      `order-${auction.id}-${Date.now()}`,
-      totalCost,
-      [{ type: 'ln', link: lightningInvoice }],
-      `Payment for auction: ${auctionData.title}`
-    );
-
-    setPaymentDialogOpen(false);
-    setLightningInvoice('');
+  const handleOpenPaymentRequestDialog = (bidItem: BidItem) => {
+    setPaymentRequestRecipient({
+      pubkey: bidItem.bid.pubkey,
+      name: '', // Will be resolved in the dialog component
+    });
+    setPaymentDialogOpen(true);
   };
 
   const getShippingCost = (bidData: BidData) => {
@@ -201,102 +193,124 @@ export function AuctionManagement({ auction, auctionData }: AuctionManagementPro
           )}
         </CardTitle>
       </CardHeader>
-      <CardContent className="space-y-6">
-        {/* Summary */}
-        <div className="grid grid-cols-3 gap-4 text-center">
-          <div>
-            <div className="text-2xl font-bold text-blue-600">
-              {bidsWithConfirmations?.length || 0}
+      <CardContent>
+        <Tabs defaultValue="bids" className="w-full">
+          <TabsList className="grid w-full grid-cols-2">
+            <TabsTrigger value="bids" className="flex items-center space-x-2">
+              <Package className="h-4 w-4" />
+              <span>Bid Management</span>
+            </TabsTrigger>
+            <TabsTrigger value="communications" className="flex items-center space-x-2">
+              <MessageCircle className="h-4 w-4" />
+              <span>Communications</span>
+            </TabsTrigger>
+          </TabsList>
+          
+          <TabsContent value="bids" className="space-y-6 mt-6">
+            {/* Summary */}
+            <div className="grid grid-cols-3 gap-4 text-center">
+              <div>
+                <div className="text-2xl font-bold text-blue-600">
+                  {bidsWithConfirmations?.length || 0}
+                </div>
+                <div className="text-sm text-muted-foreground">Total Bids</div>
+              </div>
+              <div>
+                <div className="text-2xl font-bold text-green-600">
+                  {acceptedBids.length}
+                </div>
+                <div className="text-sm text-muted-foreground">Accepted</div>
+              </div>
+              <div>
+                <div className="text-2xl font-bold text-orange-600">
+                  {pendingBids.length}
+                </div>
+                <div className="text-sm text-muted-foreground">Pending</div>
+              </div>
             </div>
-            <div className="text-sm text-muted-foreground">Total Bids</div>
-          </div>
-          <div>
-            <div className="text-2xl font-bold text-green-600">
-              {acceptedBids.length}
-            </div>
-            <div className="text-sm text-muted-foreground">Accepted</div>
-          </div>
-          <div>
-            <div className="text-2xl font-bold text-orange-600">
-              {pendingBids.length}
-            </div>
-            <div className="text-sm text-muted-foreground">Pending</div>
-          </div>
-        </div>
 
-        <Separator />
+            <Separator />
 
-        {/* Winner Section */}
-        {winner && (
-          <div className="space-y-4">
-            <h3 className="font-semibold flex items-center space-x-2">
-              <Crown className="h-4 w-4 text-yellow-500" />
-              <span>Auction Winner</span>
-            </h3>
-            <BidItem 
-              bidItem={winner} 
-              onAction={() => setPaymentDialogOpen(true)}
-              actionLabel="Send Payment Request"
-              actionIcon={<DollarSign className="h-4 w-4" />}
+            {/* Winner Section */}
+            {winner && (
+              <div className="space-y-4">
+                <h3 className="font-semibold flex items-center space-x-2">
+                  <Crown className="h-4 w-4 text-yellow-500" />
+                  <span>Auction Winner</span>
+                </h3>
+                <BidItem 
+                  bidItem={winner} 
+                  onAction={() => handleOpenPaymentRequestDialog(winner)}
+                  actionLabel="Send Payment Request"
+                  actionIcon={<DollarSign className="h-4 w-4" />}
+                />
+              </div>
+            )}
+
+            {/* Pending Bids */}
+            {pendingBids.length > 0 && (
+              <div className="space-y-4">
+                <h3 className="font-semibold flex items-center space-x-2">
+                  <Clock className="h-4 w-4 text-orange-500" />
+                  <span>Pending Bids ({pendingBids.length})</span>
+                </h3>
+                <div className="space-y-3">
+                  {pendingBids.map((bidItem) => (
+                    <BidItem
+                      key={bidItem.bid.id}
+                      bidItem={bidItem}
+                      onAction={() => setSelectedBid(bidItem)}
+                      actionLabel="Review"
+                      actionIcon={<MessageSquare className="h-4 w-4" />}
+                    />
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Accepted Bids */}
+            {acceptedBids.length > 0 && (
+              <div className="space-y-4">
+                <h3 className="font-semibold flex items-center space-x-2">
+                  <Check className="h-4 w-4 text-green-500" />
+                  <span>Accepted Bids ({acceptedBids.length})</span>
+                </h3>
+                <div className="space-y-3">
+                  {acceptedBids.slice(0, 5).map((bidItem) => (
+                    <BidItem
+                      key={bidItem.bid.id}
+                      bidItem={bidItem}
+                      onAction={isAuctionEnded ? () => handleSelectWinner(bidItem) : undefined}
+                      actionLabel={isAuctionEnded ? "Select Winner" : undefined}
+                      actionIcon={isAuctionEnded ? <Crown className="h-4 w-4" /> : undefined}
+                    />
+                  ))}
+                  {acceptedBids.length > 5 && (
+                    <p className="text-sm text-muted-foreground text-center">
+                      And {acceptedBids.length - 5} more accepted bids...
+                    </p>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* No Bids */}
+            {(!bidsWithConfirmations || bidsWithConfirmations.length === 0) && (
+              <div className="text-center py-8 text-muted-foreground">
+                <AlertTriangle className="h-8 w-8 mx-auto mb-2 opacity-50" />
+                <p>No bids received yet</p>
+                <p className="text-sm">Share your auction to get more visibility!</p>
+              </div>
+            )}
+          </TabsContent>
+
+          <TabsContent value="communications" className="mt-6">
+            <AuctionCommunications 
+              auctionId={auctionData.id}
+              auctionTitle={auctionData.title}
             />
-          </div>
-        )}
-
-        {/* Pending Bids */}
-        {pendingBids.length > 0 && (
-          <div className="space-y-4">
-            <h3 className="font-semibold flex items-center space-x-2">
-              <Clock className="h-4 w-4 text-orange-500" />
-              <span>Pending Bids ({pendingBids.length})</span>
-            </h3>
-            <div className="space-y-3">
-              {pendingBids.map((bidItem) => (
-                <BidItem
-                  key={bidItem.bid.id}
-                  bidItem={bidItem}
-                  onAction={() => setSelectedBid(bidItem)}
-                  actionLabel="Review"
-                  actionIcon={<MessageSquare className="h-4 w-4" />}
-                />
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* Accepted Bids */}
-        {acceptedBids.length > 0 && (
-          <div className="space-y-4">
-            <h3 className="font-semibold flex items-center space-x-2">
-              <Check className="h-4 w-4 text-green-500" />
-              <span>Accepted Bids ({acceptedBids.length})</span>
-            </h3>
-            <div className="space-y-3">
-              {acceptedBids.slice(0, 5).map((bidItem) => (
-                <BidItem
-                  key={bidItem.bid.id}
-                  bidItem={bidItem}
-                  onAction={isAuctionEnded ? () => handleSelectWinner(bidItem) : undefined}
-                  actionLabel={isAuctionEnded ? "Select Winner" : undefined}
-                  actionIcon={isAuctionEnded ? <Crown className="h-4 w-4" /> : undefined}
-                />
-              ))}
-              {acceptedBids.length > 5 && (
-                <p className="text-sm text-muted-foreground text-center">
-                  And {acceptedBids.length - 5} more accepted bids...
-                </p>
-              )}
-            </div>
-          </div>
-        )}
-
-        {/* No Bids */}
-        {(!bidsWithConfirmations || bidsWithConfirmations.length === 0) && (
-          <div className="text-center py-8 text-muted-foreground">
-            <AlertTriangle className="h-8 w-8 mx-auto mb-2 opacity-50" />
-            <p>No bids received yet</p>
-            <p className="text-sm">Share your auction to get more visibility!</p>
-          </div>
-        )}
+          </TabsContent>
+        </Tabs>
 
         {/* Bid Confirmation Dialog */}
         <Dialog open={!!selectedBid} onOpenChange={() => setSelectedBid(null)}>
@@ -383,41 +397,18 @@ export function AuctionManagement({ auction, auctionData }: AuctionManagementPro
         </Dialog>
 
         {/* Payment Request Dialog */}
-        <Dialog open={paymentDialogOpen} onOpenChange={setPaymentDialogOpen}>
-          <DialogContent>
-            <DialogHeader>
-              <DialogTitle>Send Payment Request</DialogTitle>
-            </DialogHeader>
-            <div className="space-y-4">
-              <div>
-                <Label htmlFor="lightning-invoice">Lightning Invoice</Label>
-                <Textarea
-                  id="lightning-invoice"
-                  value={lightningInvoice}
-                  onChange={(e) => setLightningInvoice(e.target.value)}
-                  placeholder="Paste Lightning invoice here..."
-                  className="mt-1 font-mono text-xs"
-                />
-              </div>
-              <div className="flex space-x-2">
-                <Button
-                  onClick={handleSendPaymentRequest}
-                  disabled={isSendingPayment || !lightningInvoice}
-                  className="flex-1"
-                >
-                  Send Payment Request
-                </Button>
-                <Button
-                  onClick={() => setPaymentDialogOpen(false)}
-                  variant="outline"
-                  className="flex-1"
-                >
-                  Cancel
-                </Button>
-              </div>
-            </div>
-          </DialogContent>
-        </Dialog>
+        {paymentRequestRecipient && (
+          <SendPaymentRequestDialog
+            open={paymentDialogOpen}
+            onOpenChange={setPaymentDialogOpen}
+            recipientPubkey={paymentRequestRecipient.pubkey}
+            recipientName={paymentRequestRecipient.name}
+            auctionId={auctionData.id}
+            auctionTitle={auctionData.title}
+            defaultAmount={winner?.bidData ? winner.bidData.amount + getShippingCost(winner.bidData) : 0}
+            defaultDescription={`Payment for auction: ${auctionData.title}`}
+          />
+        )}
       </CardContent>
     </Card>
   );

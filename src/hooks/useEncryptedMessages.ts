@@ -14,6 +14,9 @@ interface PaymentMessage {
   }>;
   paid?: boolean;
   shipped?: boolean;
+  amount?: number;
+  memo?: string;
+  created_at?: number;
 }
 
 export function useEncryptedMessages() {
@@ -27,14 +30,14 @@ export function useEncryptedMessages() {
       
       const signal = AbortSignal.any([c.signal, AbortSignal.timeout(3000)]);
       
-      // Get encrypted messages sent to the user
+      // Get encrypted messages sent to the user (NIP-04 kind 4 events)
       const events = await nostr.query([{
-        kinds: [4], // Encrypted DM
+        kinds: [4], // NIP-04 Encrypted Direct Messages
         '#p': [user.pubkey],
         limit: 50,
       }], { signal });
 
-      // Decrypt messages if possible
+      // Decrypt messages if possible (NIP-04 only for kind 4 events)
       const decryptedMessages = await Promise.all(
         events.map(async (event) => {
           try {
@@ -48,7 +51,7 @@ export function useEncryptedMessages() {
               };
             }
           } catch (error) {
-            console.error('Failed to decrypt message:', error);
+            console.error('Failed to decrypt NIP-04 message:', error);
           }
           return {
             event,
@@ -87,13 +90,15 @@ export function useSendEncryptedMessage() {
     }
 
     try {
+      // Use NIP-04 encryption for kind 4 events
       const encrypted = await user.signer.nip04.encrypt(
         recipientPubkey,
         JSON.stringify(message)
       );
 
+      // Create NIP-04 encrypted direct message event
       createEvent({
-        kind: 4,
+        kind: 4, // NIP-04 Encrypted Direct Message
         content: encrypted,
         tags: [['p', recipientPubkey]],
       }, {
@@ -111,10 +116,11 @@ export function useSendEncryptedMessage() {
           });
         },
       });
-    } catch {
+    } catch (error) {
+      console.error('NIP-04 encryption failed:', error);
       toast({
         title: 'Encryption failed',
-        description: 'Failed to encrypt message',
+        description: error instanceof Error ? error.message : 'Failed to encrypt message',
         variant: 'destructive',
       });
     }
