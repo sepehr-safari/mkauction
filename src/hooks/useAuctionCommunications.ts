@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { useNostr } from '@nostrify/react';
 import { useCurrentUser } from '@/hooks/useCurrentUser';
-import { useSendEncryptedMessage } from '@/hooks/useEncryptedMessages';
+import { useNostrPublish } from '@/hooks/useNostrPublish';
 import { useToast } from '@/hooks/useToast';
 import type { NostrEvent } from '@nostrify/nostrify';
 
@@ -48,23 +48,77 @@ export function useAuctionCommunications(auctionId?: string) {
   return useQuery({
     queryKey: ['auction-communications', user?.pubkey, auctionId],
     queryFn: async (c) => {
-      if (!user) return [];
+      if (!user || !auctionId) return [];
       
       const signal = AbortSignal.any([c.signal, AbortSignal.timeout(5000)]);
       
-      // Get all NIP-04 encrypted messages to and from the user
+      // First, get the auction event to find its event ID
+      const auctionEvents = await nostr.query([{
+        kinds: [30020], // NIP-15 auction events
+        '#d': [auctionId],
+        limit: 1,
+      }], { signal });
+
+      const auctionEvent = auctionEvents[0];
+      if (!auctionEvent) return [];
+
+      // Get all bids and bid confirmations for this auction to identify participants
+      const [bids, bidConfirmations] = await Promise.all([
+        nostr.query([{
+          kinds: [1021], // NIP-15 bid events
+          '#e': [auctionEvent.id],
+          limit: 100,
+        }], { signal }),
+        nostr.query([{
+          kinds: [1022], // NIP-15 bid confirmation events
+          '#e': [auctionEvent.id],
+          limit: 100,
+        }], { signal })
+      ]);
+
+      // Get unique bidder pubkeys (auction participants)
+      const participantPubkeys = new Set<string>();
+      bids.forEach(bid => {
+        if (bid.pubkey !== user.pubkey) { // Don't include self
+          participantPubkeys.add(bid.pubkey);
+        }
+      });
+
+      // Also include participants from bid confirmations (in case they haven't bid yet but received confirmations)
+      bidConfirmations.forEach(confirmation => {
+        const bidderPubkey = confirmation.tags.find(([name]) => name === 'p')?.[1];
+        if (bidderPubkey && bidderPubkey !== user.pubkey) {
+          participantPubkeys.add(bidderPubkey);
+        }
+      });
+
+      // If user is the auction owner, include all bidders as participants
+      // If user is a bidder, only include the auction owner as participant
+      const relevantParticipants = new Set<string>();
+      if (user.pubkey === auctionEvent.pubkey) {
+        // User is auction owner - include all bidders
+        participantPubkeys.forEach(pubkey => relevantParticipants.add(pubkey));
+      } else {
+        // User is a bidder - include auction owner
+        relevantParticipants.add(auctionEvent.pubkey);
+      }
+
+      if (relevantParticipants.size === 0) return [];
+
+      // Get all NIP-04 encrypted messages between user and participants
       const [sentMessages, receivedMessages] = await Promise.all([
-        // Messages sent by the user (NIP-04)
+        // Messages sent by the user to participants
         nostr.query([{
           kinds: [4], // NIP-04 Encrypted Direct Messages
           authors: [user.pubkey],
-          limit: 100,
+          limit: 200,
         }], { signal }),
-        // Messages received by the user (NIP-04)
+        // Messages received by the user from participants
         nostr.query([{
           kinds: [4], // NIP-04 Encrypted Direct Messages
+          authors: Array.from(relevantParticipants),
           '#p': [user.pubkey],
-          limit: 100,
+          limit: 200,
         }], { signal })
       ]);
 
@@ -79,7 +133,7 @@ export function useAuctionCommunications(auctionId?: string) {
               ? event.tags.find(tag => tag[0] === 'p')?.[1] 
               : event.pubkey;
 
-            if (!otherPubkey) return null;
+            if (!otherPubkey || !relevantParticipants.has(otherPubkey)) return null;
 
             // Use NIP-04 decryption for kind 4 events
             if (user.signer?.nip04?.decrypt) {
@@ -90,7 +144,7 @@ export function useAuctionCommunications(auctionId?: string) {
               const parsed = JSON.parse(decrypted) as AuctionMessage;
               
               // Filter for auction-related messages
-              if (auctionId && parsed.auction_id !== auctionId) {
+              if (parsed.auction_id && parsed.auction_id !== auctionId) {
                 return null;
               }
 
@@ -111,34 +165,67 @@ export function useAuctionCommunications(auctionId?: string) {
       // Group messages by participant
       const messageThreads = new Map<string, MessageThread>();
       
+      // Initialize threads for all participants (even if no messages yet)
+      relevantParticipants.forEach(pubkey => {
+        messageThreads.set(pubkey, {
+          participant: pubkey,
+          messages: [],
+          unreadCount: 0,
+        });
+      });
+
+      // Add decrypted messages to threads
       decryptedMessages
         .filter(msg => msg !== null)
         .forEach(msg => {
           if (!msg) return;
           
           const participantKey = msg.otherPubkey;
+          const thread = messageThreads.get(participantKey);
           
-          if (!messageThreads.has(participantKey)) {
-            messageThreads.set(participantKey, {
-              participant: participantKey,
-              messages: [],
-              unreadCount: 0,
+          if (thread) {
+            thread.messages.push({
+              event: msg.event,
+              decrypted: msg.decrypted,
+              isFromMe: msg.isFromMe,
             });
-          }
 
-          const thread = messageThreads.get(participantKey)!;
-          thread.messages.push({
-            event: msg.event,
-            decrypted: msg.decrypted,
-            isFromMe: msg.isFromMe,
-          });
-
-          // Update last message and unread count
-          if (!msg.isFromMe && (!thread.lastMessage || msg.event.created_at > thread.lastMessage.created_at)) {
-            thread.lastMessage = msg.decrypted;
-            thread.unreadCount++;
+            // Update last message and unread count
+            if (!msg.isFromMe && (!thread.lastMessage || msg.event.created_at > thread.lastMessage.created_at)) {
+              thread.lastMessage = msg.decrypted;
+              thread.unreadCount++;
+            }
           }
         });
+
+      // Add context from bid confirmations as system messages
+      bidConfirmations.forEach(confirmation => {
+        const bidderPubkey = confirmation.tags.find(([name]) => name === 'p')?.[1];
+        if (!bidderPubkey || bidderPubkey === user.pubkey) return;
+
+        const thread = messageThreads.get(bidderPubkey);
+        if (thread) {
+          try {
+            const confirmationData = JSON.parse(confirmation.content);
+            const systemMessage: AuctionMessage = {
+              id: `system_${confirmation.id}`,
+              type: AUCTION_MESSAGE_TYPES.GENERAL,
+              message: `Bid ${confirmationData.status}${confirmationData.message ? ': ' + confirmationData.message : ''}`,
+              auction_id: auctionId,
+              auction_title: 'System Message',
+              created_at: confirmation.created_at,
+            };
+
+            thread.messages.push({
+              event: confirmation,
+              decrypted: systemMessage,
+              isFromMe: confirmation.pubkey === user.pubkey,
+            });
+          } catch (error) {
+            console.error('Failed to parse bid confirmation:', error);
+          }
+        }
+      });
 
       // Sort messages within each thread by timestamp
       Array.from(messageThreads.values()).forEach(thread => {
@@ -152,7 +239,7 @@ export function useAuctionCommunications(auctionId?: string) {
           return bLastTime - aLastTime;
         });
     },
-    enabled: !!user?.pubkey,
+    enabled: !!user?.pubkey && !!auctionId,
     staleTime: 30000,
     refetchInterval: 60000,
   });
@@ -165,7 +252,7 @@ export function useAuctionMessageThread(participantPubkey: string, auctionId?: s
   return useQuery({
     queryKey: ['auction-message-thread', user?.pubkey, participantPubkey, auctionId],
     queryFn: async (c) => {
-      if (!user) return [];
+      if (!user || !participantPubkey) return [];
       
       const signal = AbortSignal.any([c.signal, AbortSignal.timeout(3000)]);
       
@@ -232,25 +319,64 @@ export function useAuctionMessageThread(participantPubkey: string, auctionId?: s
 }
 
 export function useSendAuctionMessage() {
-  const { sendEncryptedMessage, isPending } = useSendEncryptedMessage();
+  const { mutate: createEvent, isPending } = useNostrPublish();
+  const { user } = useCurrentUser();
   const { toast } = useToast();
 
   const sendAuctionMessage = async (
     recipientPubkey: string,
     messageData: Omit<AuctionMessage, 'created_at'> & { created_at?: number }
   ) => {
+    if (!user?.signer?.nip04?.encrypt) {
+      toast({
+        title: 'Encryption not available',
+        description: 'Please use a signer that supports NIP-04 encryption',
+        variant: 'destructive',
+      });
+      throw new Error('NIP-04 encryption not available');
+    }
+
     const fullMessage: AuctionMessage = {
       ...messageData,
       created_at: messageData.created_at || Math.floor(Date.now() / 1000),
     };
 
     try {
-      await sendEncryptedMessage(recipientPubkey, fullMessage);
+      // Use NIP-04 encryption for kind 4 events
+      const encrypted = await user.signer.nip04.encrypt(
+        recipientPubkey,
+        JSON.stringify(fullMessage)
+      );
+
+      // Create NIP-04 encrypted direct message event
+      return new Promise<void>((resolve, reject) => {
+        createEvent({
+          kind: 4, // NIP-04 Encrypted Direct Message
+          content: encrypted,
+          tags: [['p', recipientPubkey]],
+        }, {
+          onSuccess: () => {
+            toast({
+              title: 'Message sent',
+              description: 'Encrypted message sent successfully',
+            });
+            resolve();
+          },
+          onError: (error) => {
+            toast({
+              title: 'Failed to send message',
+              description: error.message,
+              variant: 'destructive',
+            });
+            reject(error);
+          },
+        });
+      });
     } catch (error) {
-      console.error('Failed to send auction message:', error);
+      console.error('NIP-04 encryption failed:', error);
       toast({
-        title: 'Failed to send message',
-        description: error instanceof Error ? error.message : 'Unknown error occurred',
+        title: 'Encryption failed',
+        description: error instanceof Error ? error.message : 'Failed to encrypt message',
         variant: 'destructive',
       });
       throw error;

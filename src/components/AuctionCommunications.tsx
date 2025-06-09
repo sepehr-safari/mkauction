@@ -155,10 +155,10 @@ function ThreadItem({
   
   return (
     <div
-      className={`p-3 rounded-lg cursor-pointer transition-colors ${
+      className={`p-3 rounded-lg cursor-pointer transition-colors border ${
         isSelected 
           ? 'bg-blue-100 border-blue-300' 
-          : 'hover:bg-muted/50'
+          : 'hover:bg-muted/50 border-transparent'
       }`}
       onClick={onClick}
     >
@@ -170,9 +170,13 @@ function ThreadItem({
           </Badge>
         )}
       </div>
-      {thread.lastMessage && (
+      {thread.lastMessage ? (
         <div className="text-xs text-muted-foreground line-clamp-2">
           {thread.lastMessage.message}
+        </div>
+      ) : (
+        <div className="text-xs text-muted-foreground italic">
+          No messages yet - start a conversation
         </div>
       )}
     </div>
@@ -207,7 +211,7 @@ function ThreadHeader({
 
 export function AuctionCommunications({ auctionId, auctionTitle, className }: AuctionCommunicationsProps) {
   const { user } = useCurrentUser();
-  const { data: communications, isLoading } = useAuctionCommunications(auctionId);
+  const { data: communications, isLoading, error } = useAuctionCommunications(auctionId);
   const { sendAuctionMessage, isPending: isSending } = useSendAuctionMessage();
 
   const [selectedThread, setSelectedThread] = useState<string | null>(null);
@@ -252,6 +256,31 @@ export function AuctionCommunications({ auctionId, auctionTitle, className }: Au
           <div className="text-center py-8 text-muted-foreground">
             <User className="h-8 w-8 mx-auto mb-2 opacity-50" />
             <p>Please log in to view communications</p>
+            <p className="text-sm mt-2">Encrypted messages with auction participants will appear here</p>
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  if (!user.signer?.nip04) {
+    return (
+      <Card className={className}>
+        <CardHeader>
+          <CardTitle className="flex items-center space-x-2">
+            <MessageCircle className="h-5 w-5" />
+            <span>Communications</span>
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="text-center py-8 text-muted-foreground">
+            <MessageCircle className="h-8 w-8 mx-auto mb-2 opacity-50" />
+            <p>NIP-04 encryption not available</p>
+            <p className="text-sm mt-2">Please use a signer that supports encrypted messages</p>
+            <div className="mt-4 text-xs bg-yellow-100 text-yellow-800 p-3 rounded">
+              <p>Communications require NIP-04 encryption to protect privacy</p>
+              <p>Try using a browser extension like Alby or nos2x</p>
+            </div>
           </div>
         </CardContent>
       </Card>
@@ -289,8 +318,25 @@ export function AuctionCommunications({ auctionId, auctionTitle, className }: Au
         <CardContent>
           <div className="text-center py-8 text-muted-foreground">
             <MessageCircle className="h-8 w-8 mx-auto mb-2 opacity-50" />
-            <p>No communications yet</p>
-            <p className="text-sm">Messages with auction participants will appear here</p>
+            <p>No auction participants yet</p>
+            <p className="text-sm">
+              {auctionId 
+                ? "Once bidders place bids, you can communicate with them here" 
+                : "Messages with auction participants will appear here"
+              }
+            </p>
+            {auctionId && (
+              <div className="mt-4 text-xs text-muted-foreground bg-muted/50 p-3 rounded">
+                <p><strong>Debug Info:</strong></p>
+                <p>• Auction ID: {auctionId}</p>
+                <p>• User: {user?.pubkey?.slice(0, 8)}...</p>
+                <p>• Loading: {isLoading ? 'Yes' : 'No'}</p>
+                <p>• Error: {error ? 'Yes' : 'No'}</p>
+                <p>• Participants found: {communications?.length || 0}</p>
+                <p>• NIP-04 available: {user?.signer?.nip04 ? 'Yes' : 'No'}</p>
+                <p className="mt-2 italic">Looking for auction participants and encrypted messages...</p>
+              </div>
+            )}
           </div>
         </CardContent>
       </Card>
@@ -301,10 +347,21 @@ export function AuctionCommunications({ auctionId, auctionTitle, className }: Au
     <>
       <Card className={className}>
         <CardHeader>
-          <CardTitle className="flex items-center space-x-2">
-            <MessageCircle className="h-5 w-5" />
-            <span>Communications</span>
-            <Badge variant="outline">{communications.length}</Badge>
+          <CardTitle className="flex items-center justify-between">
+            <div className="flex items-center space-x-2">
+              <MessageCircle className="h-5 w-5" />
+              <span>Communications</span>
+              <Badge variant="outline">{communications.length} participants</Badge>
+            </div>
+            {user?.signer?.nip04 ? (
+              <Badge variant="outline" className="text-xs bg-green-100 text-green-800">
+                NIP-04 Ready
+              </Badge>
+            ) : (
+              <Badge variant="outline" className="text-xs bg-yellow-100 text-yellow-800">
+                Encryption Unavailable
+              </Badge>
+            )}
           </CardTitle>
         </CardHeader>
         <CardContent>
